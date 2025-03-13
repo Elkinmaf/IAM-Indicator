@@ -863,94 +863,196 @@ class SAPBrowser:
 
 
 
+
+
+
+
     def select_customer_automatically(self, erp_number):
         """
-        Selecciona automáticamente un cliente escribiendo directamente su número.
+        Selecciona automáticamente un cliente en la pantalla de Project Overview.
+        
+        Args:
+            erp_number (str): Número ERP del cliente a seleccionar
+            
+        Returns:
+            bool: True si la selección fue exitosa, False en caso contrario
         """
         try:
-            logger.info(f"Seleccionando cliente {erp_number} automáticamente...")
+              # Verificar que el ERP no esté vacío
+            if not erp_number or erp_number.strip() == "":
+                logger.warning("No se puede seleccionar cliente: ERP número vacío")
+                return False
+            logger.info(f"Intentando seleccionar automáticamente el cliente {erp_number}...")
             
-            # Buscar campo de cliente
-            customer_field_xpath = "//input[contains(@placeholder, 'Customer')] | //input[@id='customer'] | //input[contains(@aria-label, 'Customer')]"
+            # Esperar a que la página cargue completamente
+            time.sleep(3)
             
+            # 1. Localizar el campo de entrada de cliente
+            customer_field_selectors = [
+                "//input[@placeholder='Enter Customer ID or Name']",
+                "//input[contains(@placeholder, 'Customer')]",
+                "//input[@id='customer']",
+                "//input[contains(@aria-label, 'Customer')]",
+                "//div[contains(text(), 'Customer')]/following-sibling::div//input",
+                "//label[contains(text(), 'Customer')]/following-sibling::div//input"
+            ]
+            
+            customer_field = None
+            for selector in customer_field_selectors:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, selector)
+                    for element in elements:
+                        if element.is_displayed():
+                            customer_field = element
+                            break
+                    if customer_field:
+                        break
+                except:
+                    continue
+            
+            if not customer_field:
+                logger.warning("No se pudo encontrar el campo de cliente visible")
+                return False
+            
+            # 2. Hacer clic en el campo para asegurarnos que tiene el foco
             try:
-                # Esperar a que el campo sea visible y clickeable
-                customer_field = WebDriverWait(self.driver, 20).until(
-                    EC.element_to_be_clickable((By.XPATH, customer_field_xpath))
-                )
-                
-                # Limpiar campo si ya tiene texto
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", customer_field)
+                time.sleep(0.5)
+                self.driver.execute_script("arguments[0].click();", customer_field)
+                logger.info("Clic realizado en campo de cliente")
+                time.sleep(0.5)
+            except:
+                logger.warning("No se pudo hacer clic en el campo de cliente")
+            
+            # 3. Limpiar el campo y escribir el número ERP
+            try:
+                # Limpiar usando JavaScript y luego las teclas
+                self.driver.execute_script("arguments[0].value = '';", customer_field)
                 customer_field.clear()
                 
-                # Escribir el número ERP del cliente
-                customer_field.send_keys(erp_number)
-                logger.info(f"Número de cliente {erp_number} ingresado en campo")
+                # Escribir el ERP character por character con pequeñas pausas
+                for char in erp_number:
+                    customer_field.send_keys(char)
+                    time.sleep(0.1)
+                
+                logger.info(f"Número ERP {erp_number} ingresado en campo de cliente")
                 time.sleep(1)
-                
-                # Simular presionar ENTER para buscar
-                customer_field.send_keys(Keys.ENTER)
-                logger.info("Tecla ENTER presionada para buscar cliente")
-                time.sleep(2)
-                
-                # 3. Hacer clic en el cliente encontrado
-                client_xpath = f"//div[contains(text(), '{erp_number}')] | //span[contains(text(), '{erp_number}')] | //td[contains(text(), '{erp_number}')]"
-                
-                try:
-                    client_element = WebDriverWait(self.driver, 10).until(
-                        EC.element_to_be_clickable((By.XPATH, client_xpath))
-                    )
-                    client_element.click()
-                    logger.info(f"Cliente {erp_number} seleccionado exitosamente")
-                    time.sleep(2)
-                    return True
-                except TimeoutException:
-                    logger.warning(f"No se encontró el cliente {erp_number} en la lista después de buscar")
-                    
-                    # Intentar con el primer resultado si existe
-                    try:
-                        first_result = self.driver.find_element(By.XPATH, 
-                            "//div[contains(@class, 'sapMListItems')]/div[1] | //tbody/tr[1]")
-                        first_result.click()
-                        logger.info("Seleccionado primer resultado de búsqueda de cliente")
-                        time.sleep(2)
-                        return True
-                    except NoSuchElementException:
-                        logger.error("No se encontraron resultados de búsqueda de cliente")
-            except TimeoutException:
-                logger.warning("No se encontró campo de búsqueda para cliente")
-                
-            # Si llegamos aquí, intentar con el botón de selección como respaldo
-            try:
-                selector_button = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'customer')]//button"))
-                )
-                selector_button.click()
-                logger.info("Clic en botón de selección de cliente como alternativa")
-                time.sleep(2)
-                
-                # Buscar e ingresar el cliente en el diálogo
-                search_field = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, "//input[@type='search']"))
-                )
-                search_field.clear()
-                search_field.send_keys(erp_number)
-                search_field.send_keys(Keys.ENTER)
-                time.sleep(2)
-                
-                # Seleccionar el cliente
-                client_element = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, f"//div[contains(text(), '{erp_number}')]"))
-                )
-                client_element.click()
-                logger.info(f"Cliente {erp_number} seleccionado por método alternativo")
-                time.sleep(2)
-                return True
-            except Exception as backup_e:
-                logger.error(f"Falló también el método alternativo: {backup_e}")
+            except Exception as e:
+                logger.error(f"Error al ingresar número ERP: {e}")
                 return False
+            
+            # 4. Esperar a que aparezcan las sugerencias
+            time.sleep(2)
+            
+            # 5. Seleccionar el cliente de la lista de sugerencias
+            suggestion_selectors = [
+                f"//div[contains(@class, 'sapMPopover')]//div[contains(text(), '{erp_number}')]",
+                f"//div[contains(@class, 'sapMListItems')]//div[contains(text(), '{erp_number}')]",
+                f"//ul[contains(@class, 'sapMList')]//li[contains(text(), '{erp_number}')]",
+                f"//*[contains(text(), '{erp_number}') and contains(text(), 'Empresas')]"
+            ]
+            
+            suggestion_found = False
+            for selector in suggestion_selectors:
+                try:
+                    suggestions = self.driver.find_elements(By.XPATH, selector)
+                    for suggestion in suggestions:
+                        if suggestion.is_displayed():
+                            # Hacer scroll hasta la sugerencia
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", suggestion)
+                            time.sleep(0.5)
+                            
+                            # Hacer clic en la sugerencia
+                            self.driver.execute_script("arguments[0].click();", suggestion)
+                            logger.info(f"Clic realizado en sugerencia de cliente: {suggestion.text}")
+                            time.sleep(1)
+                            suggestion_found = True
+                            break
+                    if suggestion_found:
+                        break
+                except:
+                    continue
+            
+            # Si no encontramos sugerencias, intentar presionar Enter
+            if not suggestion_found:
+                logger.info("No se encontraron sugerencias, presionando Enter")
+                customer_field.send_keys(Keys.ENTER)
+                time.sleep(2)
+                
+                # Intentar buscar la primera línea de resultados
+                try:
+                    first_result = self.driver.find_element(By.XPATH, 
+                        "//div[contains(@class, 'sapMListItems')]/div[1] | //tbody/tr[1] | //li[1]")
+                    self.driver.execute_script("arguments[0].click();", first_result)
+                    logger.info("Clic en primer resultado realizado")
+                    time.sleep(1)
+                    suggestion_found = True
+                except:
+                    logger.warning("No se pudo seleccionar el primer resultado")
+            
+            # 6. Verificar si se seleccionó correctamente
+            try:
+                # Verificar si hay texto visible con el cliente seleccionado
+                visible_elements = self.driver.find_elements(By.XPATH, 
+                    f"//*[contains(text(), '{erp_number}') and (contains(text(), 'Empresas') or contains(text(), 'Publicas'))]")
+                
+                if visible_elements:
+                    for element in visible_elements:
+                        if element.is_displayed():
+                            logger.info(f"Cliente {erp_number} seleccionado con éxito")
+                            return True
+                
+                # También verificar si el campo ahora tiene el valor correcto
+                if customer_field.get_attribute("value") and erp_number in customer_field.get_attribute("value"):
+                    logger.info(f"Campo de cliente ahora contiene '{erp_number}'")
+                    return True
+                    
+                logger.warning(f"No se pudo confirmar que el cliente {erp_number} fue seleccionado")
+                return suggestion_found  # Retornar True si al menos se hizo clic en una sugerencia
+            except Exception as verify_e:
+                logger.error(f"Error al verificar selección de cliente: {verify_e}")
+                return suggestion_found
                 
         except Exception as e:
             logger.error(f"Error durante la selección automática de cliente: {e}")
+            return False    
+    
+    
+    
+    
+    def verify_fields_have_expected_values(self, erp_number, project_id):
+        """Verifica si los campos ya contienen los valores esperados"""
+        try:
+            # Verificar el campo de cliente
+            customer_fields = self.driver.find_elements(
+                By.XPATH,
+                "//input[contains(@placeholder, 'Customer') or contains(@placeholder, 'cliente')]"
+            )
+            
+            if customer_fields:
+                for field in customer_fields:
+                    current_value = field.get_attribute("value") or ""
+                    if erp_number in current_value:
+                        logger.info(f"Campo de cliente ya contiene '{erp_number}'")
+                        return True
+            
+            # Verificar si hay texto visible con estos valores
+            page_text = self.driver.find_element(By.TAG_NAME, "body").text
+            if erp_number in page_text and project_id in page_text:
+                logger.info(f"La página ya contiene '{erp_number}' y '{project_id}'")
+                
+                # Verificar si estamos en la página correcta con los datos
+                issues_elements = self.driver.find_elements(
+                    By.XPATH, 
+                    "//div[contains(text(), 'Issues')]"
+                )
+                if issues_elements:
+                    logger.info("En la página correcta con datos cargados")
+                    return True
+                
+            return False
+        except Exception as e:
+            logger.debug(f"Error al verificar campos: {e}")
             return False
     
     
@@ -958,7 +1060,24 @@ class SAPBrowser:
     
     
     
-    
+    def _fill_fields_and_extract(self, erp_number, project_id):
+        """Rellena los campos y luego ejecuta la extracción"""
+        try:
+            # Primero verificar si los campos ya tienen los valores correctos
+            if self.browser.verify_fields_have_expected_values(erp_number, project_id):
+                logger.info("Los campos ya contienen los valores correctos, procediendo con la extracción")
+                # Ir directamente a la extracción sin intentar rellenar campos
+                self.perform_extraction()
+                return
+                
+            logger.info("Intentando rellenar campos automáticamente")
+            
+            # Resto del código para rellenar campos...
+            # ...
+            
+        except Exception as e:
+            logger.error(f"Error al rellenar campos y extraer: {e}")
+            # Manejo de errores...
     
     
     
@@ -3054,11 +3173,21 @@ class IssuesExtractor:
                     self.status_var.set("Error al conectar con el navegador")
                     
                 return False
+
+            # Obtener valores de cliente y proyecto - APLICAR TRIM PARA ELIMINAR ESPACIOS
+            erp_number = self.client_var.get().strip() if hasattr(self, 'client_var') and self.client_var else "1025541"
+            project_id = self.project_var.get().strip() if hasattr(self, 'project_var') and self.project_var else "20096444"
+
+            if not erp_number:
+                logger.warning("ERP number está vacío, usando valor por defecto")
+                erp_number = "1025541"
                 
-            # Obtener valores de cliente y proyecto
-            erp_number = self.client_var.get() if hasattr(self, 'client_var') and self.client_var else "1025541"
-            project_id = self.project_var.get() if hasattr(self, 'project_var') and self.project_var else "20096444"
+            if not project_id:
+                logger.warning("Project ID está vacío, usando valor por defecto")
+                project_id = "20096444"
                 
+            logger.info(f"Iniciando extracción para cliente: {erp_number}, proyecto: {project_id}")
+        
             # Navegar a la URL inicial especificada
             logger.info("Navegando a la URL de SAP con parámetros específicos...")
             
@@ -3605,7 +3734,9 @@ class IssuesExtractor:
 
 
 # Entry Proyecto
-        self.project_var = tk.StringVar(value="20096444")
+        # Para la inicialización de los Entry
+        self.client_var = tk.StringVar()
+        self.client_var.set("1025541")  # Valor por defecto
         project_entry = tk.Entry(project_frame, 
                             textvariable=self.project_var,
                             width=15,
@@ -4386,40 +4517,68 @@ class IssuesExtractor:
         # Deshabilitar el widget
         self.log_text.configure(state='disabled')
     
+
+
+
+
+
+
     def select_client(self, client_string):
         """Maneja la selección de un cliente desde el combobox"""
         try:
+            if not client_string:
+                return
+                
             # Extraer el ERP number del string "1025541 - Nombre del cliente"
-            erp_number = client_string.split(" - ")[0]
+            erp_number = client_string.split(" - ")[0].strip()
+            
+            # Establecer el valor en el Entry
             self.client_var.set(erp_number)
             
             # Actualizar la lista de proyectos para este cliente
             projects = self.db_manager.get_projects(erp_number)
             self.project_combo['values'] = projects
             
+            # Si hay proyectos disponibles, seleccionar el primero
             if projects:
                 self.project_combo.current(0)
                 self.select_project(projects[0])
-                
+                    
             # Actualizar el uso de este cliente
             self.db_manager.update_client_usage(erp_number)
             
-            logger.info(f"Cliente seleccionado: {client_string}")
+            logger.info(f"Cliente seleccionado: {erp_number}")
             self.save_config()
         except Exception as e:
-            logger.error(f"Error al seleccionar cliente: {e}")
-    
+            logger.error(f"Error al seleccionar cliente: {e}")    
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
     def select_project(self, project_string):
         """Maneja la selección de un proyecto desde el combobox"""
         try:
+            if not project_string:
+                return
+                
             # Extraer el ID del proyecto del string "20096444 - Nombre del proyecto"
-            project_id = project_string.split(" - ")[0]
+            project_id = project_string.split(" - ")[0].strip()
+            
+            # Establecer el valor en el Entry
             self.project_var.set(project_id)
             
             # Actualizar el uso de este proyecto
             self.db_manager.update_project_usage(project_id)
             
-            logger.info(f"Proyecto seleccionado: {project_string}")
+            logger.info(f"Proyecto seleccionado: {project_id}")
             self.save_config()
         except Exception as e:
             logger.error(f"Error al seleccionar proyecto: {e}")
@@ -4510,6 +4669,18 @@ class IssuesExtractor:
         
         messagebox.showinfo("Instrucciones de Extracción", instructions)
     
+
+
+
+
+
+
+
+
+
+
+
+
     def start_extraction(self):
         """Inicia el proceso de extracción desde la interfaz gráfica"""
         try:
@@ -4528,13 +4699,104 @@ class IssuesExtractor:
                 messagebox.showwarning("Navegador no iniciado", "Debe iniciar el navegador primero.")
                 return
                 
+            # Obtener valores de cliente y proyecto
+            erp_number = self.client_var.get()
+            project_id = self.project_var.get()
+            
             # Iniciar extracción en un hilo separado para no bloquear la GUI
-            threading.Thread(target=self.perform_extraction, daemon=True).start()
+            threading.Thread(
+                target=self._fill_fields_and_extract, 
+                args=(erp_number, project_id),
+                daemon=True
+            ).start()
             
         except Exception as e:
             logger.error(f"Error al iniciar extracción: {e}")
             self.status_var.set(f"Error: {e}")
-            messagebox.showerror("Error", f"Error al iniciar extracción: {e}")
+            messagebox.showerror("Error", f"Error al iniciar extracción: {e}")            
+    
+    
+    
+    
+    
+    
+    
+    def _fill_fields_and_extract(self, erp_number, project_id):
+        """Rellena los campos y luego ejecuta la extracción"""
+        try:
+            # Actualizar la interfaz
+            if hasattr(self, 'status_var'):
+                self.status_var.set("Seleccionando cliente...")
+                if self.root:
+                    self.root.update()
+            
+            # 1. Seleccionar cliente
+            if not self.browser.select_customer_automatically(erp_number):
+                logger.warning("No se pudo seleccionar cliente automáticamente")
+                # Mostrar mensaje al usuario
+                if self.root:
+                    self.root.after(0, lambda: messagebox.showwarning(
+                        "Selección Manual Requerida", 
+                        "No se pudo seleccionar el cliente automáticamente.\n\n"
+                        "Por favor, seleccione manualmente el cliente."
+                    ))
+                    time.sleep(3)  # Dar tiempo para selección manual
+            else:
+                logger.info(f"Cliente {erp_number} seleccionado con éxito")
+            
+            # Actualizar la interfaz
+            if hasattr(self, 'status_var'):
+                self.status_var.set("Seleccionando proyecto...")
+                if self.root:
+                    self.root.update()
+            
+            # 2. Esperar un momento y luego seleccionar proyecto
+            time.sleep(2)
+            if not self.browser.select_project_automatically(project_id):
+                logger.warning("No se pudo seleccionar proyecto automáticamente")
+                # Mostrar mensaje al usuario
+                if self.root:
+                    self.root.after(0, lambda: messagebox.showwarning(
+                        "Selección Manual Requerida", 
+                        "No se pudo seleccionar el proyecto automáticamente.\n\n"
+                        "Por favor, seleccione manualmente el proyecto."
+                    ))
+                    time.sleep(3)  # Dar tiempo para selección manual
+            else:
+                logger.info(f"Proyecto {project_id} seleccionado con éxito")
+            
+            # 3. Hacer clic en el botón de búsqueda
+            if hasattr(self, 'status_var'):
+                self.status_var.set("Realizando búsqueda...")
+                if self.root:
+                    self.root.update()
+            
+            time.sleep(1)
+            self.browser.click_search_button()
+            
+            # 4. Continuar con la extracción
+            logger.info("Iniciando proceso de extracción")
+            if hasattr(self, 'status_var'):
+                self.status_var.set("Extrayendo datos...")
+                if self.root:
+                    self.root.update()
+            
+            self.perform_extraction()
+            
+        except Exception as e:
+            logger.error(f"Error al rellenar campos y extraer: {e}")
+            if hasattr(self, 'status_var'):
+                self.status_var.set(f"Error: {e}")
+            
+            if self.root:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Error", 
+                    f"Error al rellenar campos: {e}"
+                ))
+    
+    
+    
+    
     
     def exit_app(self):
         """Cierra la aplicación"""
@@ -4599,19 +4861,14 @@ class IssuesExtractor:
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     config = json.load(f)
-                    
-                    if 'client' in config:
-                        self.client_var.set(config['client'])
                         
-                    if 'project' in config:
-                        self.project_var.set(config['project'])
                         
-                    if 'excel_path' in config and os.path.exists(config['excel_path']):
-                        self.excel_file_path = config['excel_path']
-                        self.excel_manager.file_path = config['excel_path']
-                        self.excel_filename_var.set(f"Archivo: {os.path.basename(config['excel_path'])}")
+                    if 'client' in config and config['client']:
+                        self.client_var.set(config['client'].strip())
                         
-                    logger.info("Configuración cargada correctamente")
+                    if 'project' in config and config['project']:
+                        self.project_var.set(config['project'].strip())
+                        
         except Exception as e:
             logger.error(f"Error al cargar configuración: {e}")
     
