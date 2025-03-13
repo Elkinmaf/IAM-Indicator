@@ -705,36 +705,425 @@ class SAPBrowser:
     
 
 
-    def navigate_to_sap(self):
-        """Navega a la URL de SAP y maneja posibles diálogos de certificados"""
+
+
+    def navigate_to_sap(self, erp_number=None, project_id=None):
+        """
+        Navega a la URL de SAP con parámetros específicos de cliente y proyecto,
+        implementando verificación y reintentos para evitar redirecciones.
+        
+        Args:
+            erp_number (str, optional): Número ERP del cliente.
+            project_id (str, optional): ID del proyecto.
+        
+        Returns:
+            bool: True si la navegación fue exitosa, False en caso contrario
+        """
         if not self.driver:
             logger.error("No hay navegador iniciado")
             return False
             
         try:
-            # Actualizar URL a la nueva URL proporcionada
-            self.driver.get("https://xalm-prod.x.eu20.alm.cloud.sap/launchpad#sdwork-center&/projects")
-            logger.info("Navegando a URL de SAP actualizada...")
+            # URL destino exacta
+            target_url = f"https://xalm-prod.x.eu20.alm.cloud.sap/launchpad#iam-ui&/?erpNumber={erp_number}&crmProjectId={project_id}&x-app-name=HEP"
+            logger.info(f"Intentando navegar a: {target_url}")
             
-            # Esperar a que cargue la página
-            time.sleep(5)
+            # Intentar navegación directa
+            self.driver.get(target_url)
+            time.sleep(5)  # Esperar carga inicial
             
-            # Intentar aceptar certificados si aparece el diálogo
-            try:
-                ok_button = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'OK') or contains(text(), 'Ok')]"))
-                )
-                ok_button.click()
-                logger.info("Se hizo clic en el botón OK del certificado")
-            except TimeoutException:
-                logger.info("No se encontró diálogo de certificado o ya fue aceptado")
+            # Verificar si fuimos redirigidos
+            current_url = self.driver.current_url
+            logger.info(f"URL actual después de navegación: {current_url}")
+            
+            # Si fuimos redirigidos a otra página, intentar navegar directamente por JavaScript
+            if "sdwork-center" in current_url or not "iam-ui" in current_url:
+                logger.warning("Detectada redirección no deseada, intentando navegación por JavaScript")
                 
-            return True
+                # Intentar con JavaScript para evitar redirecciones
+                js_navigate_script = f"""
+                window.location.href = "{target_url}";
+                """
+                self.driver.execute_script(js_navigate_script)
+                time.sleep(5)  # Esperar a que cargue la página
+                
+                # Verificar nuevamente
+                current_url = self.driver.current_url
+                logger.info(f"URL después de navegación por JavaScript: {current_url}")
+                
+                # Si aún no estamos en la URL correcta, usar hackerParams para forzar
+                if "sdwork-center" in current_url or not "iam-ui" in current_url:
+                    logger.warning("Redirección persistente, intentando método forzado")
+                    
+                    # Método más agresivo para forzar la navegación
+                    force_script = f"""
+                    var hackerParams = new URLSearchParams();
+                    hackerParams.append('erpNumber', '{erp_number}');
+                    hackerParams.append('crmProjectId', '{project_id}');
+                    hackerParams.append('x-app-name', 'HEP');
+                    
+                    var targetHash = '#iam-ui&/?' + hackerParams.toString();
+                    window.location.hash = targetHash;
+                    """
+                    self.driver.execute_script(force_script)
+                    time.sleep(5)
             
+            # Intentar aceptar certificados o diálogos si aparecen
+            try:
+                ok_buttons = self.driver.find_elements(By.XPATH, 
+                    "//button[contains(text(), 'OK') or contains(text(), 'Ok') or contains(text(), 'Aceptar')]")
+                if ok_buttons:
+                    for button in ok_buttons:
+                        if button.is_displayed():
+                            button.click()
+                            logger.info("Se hizo clic en un botón de diálogo")
+                            time.sleep(1)
+            except Exception as dialog_e:
+                logger.debug(f"Error al manejar diálogos: {dialog_e}")
+            
+            # Verificar URL final después de todos los intentos
+            final_url = self.driver.current_url
+            logger.info(f"URL final después de todos los intentos: {final_url}")
+            
+            # Esperar a que la página cargue completamente
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+                logger.info("Página cargada completamente")
+            except TimeoutException:
+                logger.warning("Tiempo de espera excedido para carga completa de página")
+            
+            # Considerar éxito si contiene iam-ui o los parámetros específicos
+            success = "iam-ui" in final_url or erp_number in final_url
+            if success:
+                logger.info("Navegación exitosa a la página deseada")
+            else:
+                logger.warning("No se pudo navegar a la página exacta deseada")
+                
+            return True  # Continuar con el flujo incluso si no llegamos exactamente a la URL
+                
         except Exception as e:
             logger.error(f"Error al navegar a SAP: {e}")
             return False
     
+    
+    
+
+
+
+
+    def handle_authentication(self):
+        """
+        Maneja el proceso de autenticación en SAP, detectando si es necesario.
+        """
+        try:
+            logger.info("Verificando si se requiere autenticación...")
+            
+            # Verificar si hay formulario de login visible
+            login_elements = self.driver.find_elements(By.XPATH, "//input[@type='email'] | //input[@type='password']")
+            
+            if login_elements:
+                logger.info("Formulario de login detectado, esperando introducción manual de credenciales")
+                
+                # Mostrar mensaje al usuario si estamos en interfaz gráfica
+                if hasattr(self, 'root') and self.root:
+                    messagebox.showinfo(
+                        "Autenticación Requerida",
+                        "Por favor, introduzca sus credenciales en el navegador.\n\n"
+                        "Haga clic en OK cuando haya iniciado sesión."
+                    )
+                else:
+                    print("\n=== AUTENTICACIÓN REQUERIDA ===")
+                    print("Por favor, introduzca sus credenciales en el navegador.")
+                    input("Presione ENTER cuando haya iniciado sesión...\n")
+                
+                # Esperar a que desaparezca la pantalla de login
+                try:
+                    WebDriverWait(self.driver, 60).until_not(
+                        EC.presence_of_element_located((By.XPATH, "//input[@type='password']"))
+                    )
+                    logger.info("Autenticación completada exitosamente")
+                    return True
+                except TimeoutException:
+                    logger.warning("Tiempo de espera excedido para autenticación")
+                    return False
+            else:
+                logger.info("No se requiere autenticación, ya hay una sesión activa")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error durante el proceso de autenticación: {e}")
+            return False
+
+
+
+
+
+
+
+
+    def select_customer_automatically(self, erp_number):
+        """
+        Selecciona automáticamente un cliente escribiendo directamente su número.
+        """
+        try:
+            logger.info(f"Seleccionando cliente {erp_number} automáticamente...")
+            
+            # Buscar campo de cliente
+            customer_field_xpath = "//input[contains(@placeholder, 'Customer')] | //input[@id='customer'] | //input[contains(@aria-label, 'Customer')]"
+            
+            try:
+                # Esperar a que el campo sea visible y clickeable
+                customer_field = WebDriverWait(self.driver, 20).until(
+                    EC.element_to_be_clickable((By.XPATH, customer_field_xpath))
+                )
+                
+                # Limpiar campo si ya tiene texto
+                customer_field.clear()
+                
+                # Escribir el número ERP del cliente
+                customer_field.send_keys(erp_number)
+                logger.info(f"Número de cliente {erp_number} ingresado en campo")
+                time.sleep(1)
+                
+                # Simular presionar ENTER para buscar
+                customer_field.send_keys(Keys.ENTER)
+                logger.info("Tecla ENTER presionada para buscar cliente")
+                time.sleep(2)
+                
+                # 3. Hacer clic en el cliente encontrado
+                client_xpath = f"//div[contains(text(), '{erp_number}')] | //span[contains(text(), '{erp_number}')] | //td[contains(text(), '{erp_number}')]"
+                
+                try:
+                    client_element = WebDriverWait(self.driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, client_xpath))
+                    )
+                    client_element.click()
+                    logger.info(f"Cliente {erp_number} seleccionado exitosamente")
+                    time.sleep(2)
+                    return True
+                except TimeoutException:
+                    logger.warning(f"No se encontró el cliente {erp_number} en la lista después de buscar")
+                    
+                    # Intentar con el primer resultado si existe
+                    try:
+                        first_result = self.driver.find_element(By.XPATH, 
+                            "//div[contains(@class, 'sapMListItems')]/div[1] | //tbody/tr[1]")
+                        first_result.click()
+                        logger.info("Seleccionado primer resultado de búsqueda de cliente")
+                        time.sleep(2)
+                        return True
+                    except NoSuchElementException:
+                        logger.error("No se encontraron resultados de búsqueda de cliente")
+            except TimeoutException:
+                logger.warning("No se encontró campo de búsqueda para cliente")
+                
+            # Si llegamos aquí, intentar con el botón de selección como respaldo
+            try:
+                selector_button = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'customer')]//button"))
+                )
+                selector_button.click()
+                logger.info("Clic en botón de selección de cliente como alternativa")
+                time.sleep(2)
+                
+                # Buscar e ingresar el cliente en el diálogo
+                search_field = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//input[@type='search']"))
+                )
+                search_field.clear()
+                search_field.send_keys(erp_number)
+                search_field.send_keys(Keys.ENTER)
+                time.sleep(2)
+                
+                # Seleccionar el cliente
+                client_element = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, f"//div[contains(text(), '{erp_number}')]"))
+                )
+                client_element.click()
+                logger.info(f"Cliente {erp_number} seleccionado por método alternativo")
+                time.sleep(2)
+                return True
+            except Exception as backup_e:
+                logger.error(f"Falló también el método alternativo: {backup_e}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error durante la selección automática de cliente: {e}")
+            return False
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    def select_project_automatically(self, project_id):
+        """
+        Selecciona automáticamente un proyecto escribiendo directamente su ID.
+        """
+        try:
+            logger.info(f"Seleccionando proyecto {project_id} automáticamente...")
+            
+            # Buscar campo de proyecto
+            project_field_xpath = "//input[contains(@placeholder, 'Project')] | //input[@id='project'] | //input[contains(@aria-label, 'Project')]"
+            
+            try:
+                # Esperar a que el campo sea visible y clickeable
+                project_field = WebDriverWait(self.driver, 20).until(
+                    EC.element_to_be_clickable((By.XPATH, project_field_xpath))
+                )
+                
+                # Limpiar campo si ya tiene texto
+                project_field.clear()
+                
+                # Escribir el ID del proyecto
+                project_field.send_keys(project_id)
+                logger.info(f"ID de proyecto {project_id} ingresado en campo")
+                time.sleep(1)
+                
+                # Simular presionar ENTER para buscar
+                project_field.send_keys(Keys.ENTER)
+                logger.info("Tecla ENTER presionada para buscar proyecto")
+                time.sleep(2)
+                
+                # Hacer clic en el proyecto encontrado
+                project_xpath = f"//div[contains(text(), '{project_id}')] | //span[contains(text(), '{project_id}')] | //td[contains(text(), '{project_id}')]"
+                
+                try:
+                    project_element = WebDriverWait(self.driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, project_xpath))
+                    )
+                    project_element.click()
+                    logger.info(f"Proyecto {project_id} seleccionado exitosamente")
+                    time.sleep(2)
+                    return True
+                except TimeoutException:
+                    logger.warning(f"No se encontró el proyecto {project_id} en la lista después de buscar")
+                    
+                    # Intentar con el primer resultado si existe
+                    try:
+                        first_result = self.driver.find_element(By.XPATH, 
+                            "//div[contains(@class, 'sapMListItems')]/div[1] | //tbody/tr[1]")
+                        first_result.click()
+                        logger.info("Seleccionado primer resultado de búsqueda de proyecto")
+                        time.sleep(2)
+                        return True
+                    except NoSuchElementException:
+                        logger.error("No se encontraron resultados de búsqueda de proyecto")
+            except TimeoutException:
+                logger.warning("No se encontró campo de búsqueda para proyecto")
+                
+            # Si llegamos aquí, intentar con el botón de selección como respaldo
+            try:
+                selector_button = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'project')]//button"))
+                )
+                selector_button.click()
+                logger.info("Clic en botón de selección de proyecto como alternativa")
+                time.sleep(2)
+                
+                # Buscar e ingresar el proyecto en el diálogo
+                search_field = WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, "//input[@type='search']"))
+                )
+                search_field.clear()
+                search_field.send_keys(project_id)
+                search_field.send_keys(Keys.ENTER)
+                time.sleep(2)
+                
+                # Seleccionar el proyecto
+                project_element = WebDriverWait(self.driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, f"//div[contains(text(), '{project_id}')]"))
+                )
+                project_element.click()
+                logger.info(f"Proyecto {project_id} seleccionado por método alternativo")
+                time.sleep(2)
+                return True
+            except Exception as backup_e:
+                logger.error(f"Falló también el método alternativo: {backup_e}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error durante la selección automática de proyecto: {e}")
+            return False
+    
+
+
+
+
+
+
+
+
+
+
+    def click_search_button(self):
+        """
+        Hace clic en el botón de búsqueda para iniciar la consulta.
+        """
+        try:
+            logger.info("Buscando botón de búsqueda...")
+            
+            # Diferentes selectores para el botón de búsqueda
+            search_button_selectors = [
+                "//button[contains(@aria-label, 'Search')]",
+                "//button[@title='Search']",
+                "//span[contains(text(), 'Search')]/parent::button",
+                "//button[contains(@class, 'sapMBarChild') and contains(@class, 'sapMBtn')]",
+                "//div[contains(@class, 'sapMBarPH')]//button"
+            ]
+            
+            for selector in search_button_selectors:
+                try:
+                    search_button = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    search_button.click()
+                    logger.info("Clic en botón de búsqueda exitoso")
+                    time.sleep(2)
+                    return True
+                except:
+                    continue
+                    
+            # Si no se encuentra por selectores específicos, buscar por icono típico
+            icon_selectors = [
+                "//span[contains(@class, 'sapUiIcon') and contains(@class, 'sapMBtnIcon')]",
+                "//span[contains(@data-sap-ui, 'search')]"
+            ]
+            
+            for selector in icon_selectors:
+                try:
+                    search_icons = self.driver.find_elements(By.XPATH, selector)
+                    for icon in search_icons:
+                        # Verificar si el icono es visible
+                        if icon.is_displayed():
+                            self.driver.execute_script("arguments[0].click();", icon)
+                            logger.info("Clic en icono de búsqueda exitoso")
+                            time.sleep(2)
+                            return True
+                except:
+                    continue
+                    
+            logger.warning("No se pudo hacer clic en botón de búsqueda")
+            return False
+        except Exception as e:
+            logger.error(f"Error al hacer clic en botón de búsqueda: {e}")
+            return False
+
+
+
+
+
+
+
+
+        
     def get_total_issues_count(self):
         """Obtiene el número total de issues desde el encabezado"""
         try:
@@ -2644,6 +3033,16 @@ class IssuesExtractor:
             
         return success
         
+
+
+
+
+
+
+
+
+
+
     def run_extraction(self):
         """Ejecuta el proceso completo de extracción"""
         try:
@@ -2656,56 +3055,80 @@ class IssuesExtractor:
                     
                 return False
                 
-            # Navegar automáticamente a la URL
-            logger.info("Navegando automáticamente a la URL de SAP...")
+            # Obtener valores de cliente y proyecto
+            erp_number = self.client_var.get() if hasattr(self, 'client_var') and self.client_var else "1025541"
+            project_id = self.project_var.get() if hasattr(self, 'project_var') and self.project_var else "20096444"
+                
+            # Navegar a la URL inicial especificada
+            logger.info("Navegando a la URL de SAP con parámetros específicos...")
             
             # Actualizar la interfaz si existe
             if hasattr(self, 'status_var') and self.status_var:
-                self.status_var.set("Navegando a la URL de SAP...")
+                self.status_var.set("Navegando a SAP...")
                 
-            if not self.browser.navigate_to_sap():
+            if not self.browser.navigate_to_sap(erp_number, project_id):
                 logger.error("Error al navegar a la URL de SAP")
                 return False
             
-            # Si estamos en la GUI, el usuario debe seguir las instrucciones en pantalla
-            if self.root:
-                instructions = """
-                Por favor, realice los siguientes pasos:
+            # Manejar autenticación si es necesario
+            if not self.browser.handle_authentication():
+                logger.error("Error en el proceso de autenticación")
+                return False
                 
-                1. Inicie sesión si es necesario
-                2. Haga clic en 'Project Overview'
-                3. Seleccione el cliente con ERP Number: {}
-                4. Seleccione el proyecto con ID: {}
-                5. Navegue a la pestaña 'Issues'
+            # Actualizar la interfaz si existe
+            if hasattr(self, 'status_var') and self.status_var:
+                self.status_var.set("Seleccionando cliente automáticamente...")
+            
+            # Seleccionar cliente
+            if not self.browser.select_customer_automatically(erp_number):
+                logger.warning("No se pudo seleccionar cliente automáticamente")
+                # Solicitar selección manual si es necesario
+                if self.root:
+                    messagebox.showwarning("Selección Manual Requerida", 
+                        "No se pudo seleccionar el cliente automáticamente.\n\n"
+                        "Por favor, seleccione manualmente el cliente y haga clic en Continuar.")
+                    result = messagebox.askokcancel("Confirmación", "¿Ha seleccionado el cliente?")
+                    if not result:
+                        return False
+            
+            # Actualizar la interfaz
+            if hasattr(self, 'status_var') and self.status_var:
+                self.status_var.set("Seleccionando proyecto automáticamente...")
+            
+            # Seleccionar proyecto
+            if not self.browser.select_project_automatically(project_id):
+                logger.warning("No se pudo seleccionar proyecto automáticamente")
+                # Solicitar selección manual si es necesario
+                if self.root:
+                    messagebox.showwarning("Selección Manual Requerida", 
+                        "No se pudo seleccionar el proyecto automáticamente.\n\n"
+                        "Por favor, seleccione manualmente el proyecto y haga clic en Continuar.")
+                    result = messagebox.askokcancel("Confirmación", "¿Ha seleccionado el proyecto?")
+                    if not result:
+                        return False
+            
+            # Hacer clic en botón de búsqueda
+            if hasattr(self, 'status_var') and self.status_var:
+                self.status_var.set("Realizando búsqueda...")
                 
-                Una vez en la tabla de issues, haga clic en 'Iniciar Extracción'
-                """.format(self.client_var.get() if self.client_var else "1025541", 
-                        self.project_var.get() if self.project_var else "20096444")
-                
-                messagebox.showinfo("Instrucciones de Navegación", instructions)
-                
-                # Actualizar la interfaz si existe
-                if hasattr(self, 'status_var') and self.status_var:
-                    self.status_var.set("Esperando a que el usuario navegue a la tabla de issues...")
-                    
-                # En la GUI, no continuamos automáticamente
-                return True
-            else:
-                # En modo consola, mostrar instrucciones y esperar ENTER
-                print("\n=== INSTRUCCIONES PARA NAVEGACIÓN ASISTIDA ===")
-                print("Se ha navegado automáticamente a la URL de SAP.")
-                print("Por favor, siga estos pasos:")
-                print("   1. Inicie sesión si es necesario")
-                print("   2. Haga clic en 'Project Overview'")
-                print("   3. Seleccione el cliente con ERP Number: 1025541")
-                print("   4. Seleccione el proyecto con ID: 20096444")
-                print("   5. Navegue a la pestaña 'Issues'")
-                
-                print("\nUna vez que esté viendo la lista de issues,")
-                input("presione ENTER para comenzar la extracción automática...\n")
-                
-                # Continuar con la extracción
-                return self.perform_extraction()
+            self.browser.click_search_button()
+            
+            # Continuar con la detección y extracción de issues
+            if hasattr(self, 'status_var') and self.status_var:
+                self.status_var.set("Navegando a la pestaña Issues...")
+            
+            # Navegar a la pestaña Issues
+            if not self.browser.navigate_to_issues_tab():
+                logger.warning("No se pudo navegar automáticamente a la pestaña Issues")
+                if self.root:
+                    messagebox.showwarning("Navegación Manual Requerida", 
+                        "Por favor, navegue manualmente a la pestaña 'Issues' y luego haga clic en Continuar.")
+                    result = messagebox.askokcancel("Confirmación", "¿Ha navegado a la pestaña Issues?")
+                    if not result:
+                        return False
+            
+            # Realizar la extracción
+            return self.perform_extraction()
                 
         except Exception as e:
             logger.error(f"Error en el proceso de extracción: {e}")
@@ -2714,8 +3137,79 @@ class IssuesExtractor:
             if hasattr(self, 'status_var') and self.status_var:
                 self.status_var.set(f"Error: {e}")
                 
+            return False    
+    
+    
+    
+    
+    
+    def navigate_to_issues_tab(self):
+        """
+        Navega a la pestaña 'Issues' una vez seleccionado el proyecto.
+        
+        Returns:
+            bool: True si la navegación fue exitosa, False en caso contrario
+        """
+        try:
+            logger.info("Intentando navegar a la pestaña Issues...")
+            
+            # Esperar a que cargue la página del proyecto
+            time.sleep(3)
+            
+            # Buscar la pestaña de Issues por diferentes selectores
+            issues_tab_selectors = [
+                "//div[contains(text(), 'Issues')] | //span[contains(text(), 'Issues')]",
+                "//li[@role='tab']//div[contains(text(), 'Issues')]",
+                "//a[contains(text(), 'Issues')]",
+                "//div[contains(@class, 'sapMITBItem')]//span[contains(text(), 'Issues')]"
+            ]
+            
+            for selector in issues_tab_selectors:
+                try:
+                    issues_tabs = self.driver.find_elements(By.XPATH, selector)
+                    if issues_tabs:
+                        for tab in issues_tabs:
+                            try:
+                                # Verificar si es visible
+                                if tab.is_displayed():
+                                    # Hacer scroll hasta el elemento
+                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tab)
+                                    time.sleep(0.5)
+                                    
+                                    # Intentar clic
+                                    self.driver.execute_script("arguments[0].click();", tab)
+                                    logger.info("Clic en pestaña Issues realizado")
+                                    time.sleep(3)  # Esperar a que cargue
+                                    return True
+                            except:
+                                continue
+                except:
+                    continue
+            
+            logger.warning("No se encontró la pestaña Issues por selectores directos")
+            
+            # Intentar buscar por posición relativa (generalmente la tercera pestaña)
+            try:
+                tabs = self.driver.find_elements(By.XPATH, "//li[@role='tab'] | //div[@role='tab']")
+                if len(tabs) >= 3:  # Asumiendo que Issues es la tercera pestaña
+                    third_tab = tabs[2]  # Índice 2 para el tercer elemento
+                    self.driver.execute_script("arguments[0].click();", third_tab)
+                    logger.info("Clic en tercera pestaña realizado")
+                    time.sleep(3)
+                    return True
+            except:
+                pass
+                
+            logger.warning("No se pudo navegar a la pestaña Issues")
             return False
             
+        except Exception as e:
+            logger.error(f"Error al navegar a la pestaña Issues: {e}")
+            return False
+    
+    
+    
+               
     def perform_extraction(self):
         """Método principal para ejecutar el proceso de extracción"""
         try:
@@ -3955,7 +4449,7 @@ class IssuesExtractor:
             logger.error(f"Error al iniciar el navegador: {e}")
             self.status_var.set(f"Error: {e}")
             messagebox.showerror("Error", f"Error al iniciar el navegador: {e}")
-    
+        
     def _start_browser_thread(self):
         """Método para ejecutar la inicialización del navegador en un hilo separado"""
         try:
@@ -3964,14 +4458,19 @@ class IssuesExtractor:
                 
                 # Actualizar la interfaz en el hilo principal
                 if self.root:
-                    self.root.after(0, lambda: self.status_var.set("Navegador iniciado. Inicie la extracción cuando esté listo."))
+                    self.root.after(0, lambda: self.status_var.set("Navegador iniciado. Navegando a SAP..."))
                 
-                # Navegar a la URL de SAP
-                self.browser.navigate_to_sap()
+                # Obtener valores de cliente y proyecto
+                erp_number = self.client_var.get() if hasattr(self, 'client_var') and self.client_var else "1025541"
+                project_id = self.project_var.get() if hasattr(self, 'project_var') and self.project_var else "20096444"
+                
+                # Navegar a la URL de SAP con parámetros específicos
+                self.browser.navigate_to_sap(erp_number, project_id)
                 
                 # Mostrar instrucciones en el hilo principal
                 if self.root:
-                    self.root.after(0, self._show_navigation_instructions)
+                    self.root.after(0, lambda: self.status_var.set("Navegación completada. Inicie la extracción cuando esté listo."))
+                    self.root.after(0, self._show_extraction_instructions)
             else:
                 if self.root:
                     self.root.after(0, lambda: self.status_var.set("Error al iniciar el navegador"))
@@ -3982,21 +4481,34 @@ class IssuesExtractor:
                 self.root.after(0, lambda: self.status_var.set(f"Error: {e}"))
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Error al iniciar el navegador: {e}"))
     
-    def _show_navigation_instructions(self):
-        """Muestra instrucciones de navegación"""
-        instructions = """
-        Por favor, realice los siguientes pasos:
+
+
+
+
+
+
+
+
+
+    def _show_extraction_instructions(self):
+        """Muestra instrucciones para la extracción después de la navegación automática"""
+        # Obtener valores actuales
+        erp_number = self.client_var.get()
+        project_id = self.project_var.get()
         
-        1. Inicie sesión si es necesario
-        2. Haga clic en 'Project Overview'
-        3. Seleccione el cliente con ERP Number: {}
-        4. Seleccione el proyecto con ID: {}
-        5. Navegue a la pestaña 'Issues'
+        instructions = f"""
+        La aplicación ha navegado automáticamente a la página de SAP con:
         
-        Una vez en la tabla de issues, haga clic en 'Iniciar Extracción'
-        """.format(self.client_var.get(), self.project_var.get())
+        Cliente: {erp_number}
+        Proyecto: {project_id}
         
-        messagebox.showinfo("Instrucciones de Navegación", instructions)
+        Por favor:
+        1. Verifique que ha iniciado sesión correctamente
+        2. Compruebe que se muestran los issues del proyecto
+        3. Cuando esté listo, haga clic en 'Iniciar Extracción'
+        """
+        
+        messagebox.showinfo("Instrucciones de Extracción", instructions)
     
     def start_extraction(self):
         """Inicia el proceso de extracción desde la interfaz gráfica"""
